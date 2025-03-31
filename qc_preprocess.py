@@ -270,7 +270,8 @@ class scRNAPreProcessor:
         ### Reset the index
         if reset_index:
             self.set_index('gene_symbols') ## Since many tools accept gene names instead of gene ids
-            self.anndata.write(os.path.join(self.output_dir, self.output_h5))
+        
+        self.anndata.write(os.path.join(self.output_dir, self.output_h5))
     
     @staticmethod
     def read_ann_data(file_path):
