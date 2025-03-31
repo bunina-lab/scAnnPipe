@@ -16,6 +16,8 @@ import json
 from typing import Literal
 from config import _seed, RIBO_GENESET_PATH
 from scipy.sparse import csr_matrix
+import functools
+import operator
 
 class scRNAPreProcessor:
     def __init__(self,
@@ -31,6 +33,11 @@ class scRNAPreProcessor:
         cells_with_min_genes_threshold=100,
         gene_ids_of_interest=None,
         normalise_counts = True,
+        filter_doublets = False,
+        n_highly_variable_genes=5000,
+        high_variable_gene_flavor="seurat_v3_paper",
+        n_top_expr_genes=50,
+
         ):
         self.anndata = anndata if anndata else self.read_ann_data(anndata_file)
         self.geneset_ids = geneset_ids
@@ -41,6 +48,10 @@ class scRNAPreProcessor:
         self.cells_with_min_genes_threshold = cells_with_min_genes_threshold
         self.gene_ids_of_interest = gene_ids_of_interest
         self.normalise_counts = normalise_counts
+        self.drop_doublets = filter_doublets
+        self.n_highly_variable_genes = n_highly_variable_genes
+        self.high_variable_gene_flavor = high_variable_gene_flavor
+        self.n_top_expr_genes = n_top_expr_genes
 
         self.output_dir = os.path.abspath(output_dir)
         self.output_h5 = output_h5
@@ -62,10 +73,13 @@ class scRNAPreProcessor:
         self.process_outliers()
         self.preliminary_filtering()
         self.populate_stats_data()
-        #self.process_doublets()
+        self.process_doublets(filter_doublets=self.drop_doublets)
         self.plot_counts("filtered")
         if self.normalise_counts:
             self.process_normalisation()
+        self.process_high_expression_genes()
+        self.process_high_variable_genes()
+        #self.get_soupX_groups()
         #self.save_data()
         return self.anndata
 
@@ -150,7 +164,8 @@ class scRNAPreProcessor:
             self.is_outlier("log1p_total_counts") | self.is_outlier("log1p_n_genes_by_counts") | self.is_outlier("pct_counts_in_top_20_genes")
         )
         self.anndata.obs["mito_counts_outlier"] = (
-            self.is_outlier("pct_counts_mt") | self.anndata.obs["pct_counts_mt"] > self.mito_percentage_threshold)
+            self.is_outlier("pct_counts_mt") | self.anndata.obs["pct_counts_mt"] > self.mito_percentage_threshold
+            )
         ##in place filtering
         self.anndata = self.anndata[(~self.anndata.obs["total_counts_outlier"]) & (~self.anndata.obs["mito_counts_outlier"])]
 
@@ -173,30 +188,6 @@ class scRNAPreProcessor:
     
     
     def plot_counts(self, save_name):
-        ## Plot 1: Distribution of total counts
-        #p1 = sns.displot(self.anndata.obs["total_counts"], bins=100, kde=False)
-        #p1.savefig(f"{save_name}_total_counts_dist.png", dpi=300, bbox_inches="tight")
-        #plt.close()
-        
-        # Plot 2: Violin plot of percentage of mitochondrial counts
-        # For scanpy plots, you need to set show=False and return the axis
-        #fig2, ax2 = plt.subplots(figsize=(8, 6))
-        #p2 = sc.pl.violin(self.anndata, "pct_counts_mt", ax=ax2, show=False)
-        #fig2.savefig(f"{save_name}_pct_mt_violin.png", dpi=300, bbox_inches="tight")
-        #lt.close(fig2)
-        
-        # Plot 3: Scatter plot
-        #fig3, ax3 = plt.subplots(figsize=(8, 6))
-        #p3 = sc.pl.scatter(self.anndata, "total_counts", "n_genes_by_counts", 
-         #               color="pct_counts_mt", ax=ax3, projection='2d', show=False)
-        #fig3.savefig(f"{save_name}_scatter_counts_genes.png", dpi=300, bbox_inches="tight")
-        #plt.close(fig3)
-
-        # Plot Ribosome counts
-        #fig4, ax4 = plt.subplots(figsize=(8, 6))
-        #p2 = sc.pl.violin(self.anndata, "pct_counts_ribo", ax=ax4, show=False)
-        #fig4.savefig(f"{save_name}_pct_counts_ribo_violin.png", dpi=300, bbox_inches="tight")
-        #plt.close(fig4)
         sc.pl.violin(
             self.anndata, 
             ['n_genes_by_counts', 'total_counts', 'pct_counts_mt', 'pct_counts_ribo'],
@@ -235,18 +226,51 @@ class scRNAPreProcessor:
         if filter_doublets:
             self.anndata = self.anndata[~doublets_fltr, :]
 
-    
     def estimate_doublets(self, simulate=True, inplace=False):
         sim_data = sc.pp.scrublet_simulate_doublets(self.anndata,random_seed=self._seed) if simulate else None
         return sc.pp.scrublet(self.anndata, adata_sim=sim_data, random_state=self._seed, copy=bool(not inplace))
+    
+    def process_high_expression_genes(self, no_ribo=True, no_mito=True):
+        fltr_lst = []
+        if no_mito:
+            fltr_lst.append(self.anndata.var["mt"])
+        if no_ribo:
+            fltr_lst.append(self.anndata.var["ribo"])
+        
+        if fltr_lst:
+            combined_filter = functools.reduce(operator.or_, fltr_lst)
+            not_ribo_not_mito = self.anndata.var[~combined_filter]
+            data_2be_plotted = self.anndata[:,not_ribo_not_mito.index]
+        else:
+            data_2be_plotted = self.anndata
+        
+        suffix_out = self.output_h5.split(".")[0]
+        sc.pl.highest_expr_genes(data_2be_plotted, gene_symbols='gene_symbols', n_top=self.n_top_expr_genes, log=True, show=False, save=f"_{suffix_out}.png")
+        os.rename(f"./figures/highest_expr_genes_{suffix_out}.png", os.path.join(self.output_dir, f"high_expr_genes_{suffix_out}.png"))
 
-    def save_data(self):
+    
+    def process_high_variable_genes(self):
+        self.get_highly_variable_genes(n_genes=self.n_highly_variable_genes, flavor=self.high_variable_gene_flavor, inplace=True)
+        self.plot_highly_variable_genes()
+
+    def plot_highly_variable_genes(self, save_name=None, dispersion_data=None):
+        suffix_out = self.output_h5.split(".")[0] if save_name is None else save_name
+        data2plot = dispersion_data if dispersion_data else self.anndata.var
+        sc.pl.highly_variable_genes(data2plot, show=False, save=f"_{suffix_out}.png")
+        os.rename(f"./figures/filter_genes_dispersion_{suffix_out}.png", os.path.join(self.output_dir, f"higly_var_genes_{suffix_out}.png"))
+
+
+    def get_highly_variable_genes(self, n_genes=5000, layer="log1p_norm", flavor='seurat_v3_paper', inplace=False):
+        return sc.pp.highly_variable_genes(self.anndata, n_top_genes=n_genes, layer=layer, flavor=flavor, inplace=inplace)
+
+    def save_data(self, reset_index=True):
         with open(os.path.join(self.output_dir, "stats.json"), "w") as fh:
             json.dump(self.statistics_data, fh, indent=4)
 
         ### Reset the index
-        self.set_index('gene_symbols') ## Since many tools accept gene names instead of gene ids
-        self.anndata.write(os.path.join(self.output_dir, self.output_h5))
+        if reset_index:
+            self.set_index('gene_symbols') ## Since many tools accept gene names instead of gene ids
+            self.anndata.write(os.path.join(self.output_dir, self.output_h5))
     
     @staticmethod
     def read_ann_data(file_path):
