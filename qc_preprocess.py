@@ -87,7 +87,7 @@ class scRNAPreProcessor:
         self.anndata.var = self.anndata.var.reset_index().rename({'index' : 'gene_symbols'}, axis=1).set_index('gene_ids')
     
     def set_index(self, index_name:str):
-        self.anndata.var = self.anndata.var.reset_index().set_index(index_name)
+        self.anndata.var = self.anndata.var.reset_index().set_index(index_name).astype(str)
     
     def process_normalisation(self, normal_type:Literal["shifted, pearson"]='shifted'):
         if normal_type == "shifted":
