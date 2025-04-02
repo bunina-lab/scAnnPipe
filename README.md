@@ -70,7 +70,7 @@ python run_qc_process.py --input_counts_file <input.h5> --output_counts_file <ou
 
 ```bash
 python run_qc_process.py \
-    --input_counts_file raw_counts.h5ad \
+    --input_counts_file unfiltered_gex_counts.h5 \
     --output_counts_file filtered_counts.h5ad \
     --output_dir results \
     --mito_percentage_threshold 10 \
