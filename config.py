@@ -9,6 +9,8 @@ sc.settings.set_figure_params(
     frameon=False,
 )
 
+ACCEPTED_CHROMOSOMES = tuple([f"chr{_}" for _ in range(23)] + ['chrX', 'chrY', 'chrM'])
+
 ### Seed
 _seed = 42
 
