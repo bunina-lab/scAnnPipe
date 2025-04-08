@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import os
 import json
 from typing import Literal
-from config import _seed, RIBO_GENESET_PATH
+from config import _seed, RIBO_GENESET_PATH, ACCEPTED_CHROMOSOMES
 from scipy.sparse import csr_matrix
 import functools
 import operator
@@ -71,6 +71,7 @@ class scRNAPreProcessor:
         self.preliminary_counts()
         self.qc_process()
         self.plot_counts("initial")
+        self.filter_canonical_chromosomes(filter_inplace=True)
         self.process_outliers()
         self.preliminary_filtering()
         self.populate_stats_data()
@@ -267,6 +268,12 @@ class scRNAPreProcessor:
         data2plot = dispersion_data if dispersion_data else self.anndata.var
         sc.pl.highly_variable_genes(data2plot, show=False, save=f"_{suffix_out}.png")
         os.rename(f"./figures/filter_genes_dispersion_{suffix_out}.png", os.path.join(self.output_dir, f"higly_var_genes_{suffix_out}.png"))
+
+    def filter_canonical_chromosomes(self, filter_inplace=True):
+        if filter_inplace:
+            self.anndata = self.anndata[:, self.anndata.var['interval'].str.startswith(ACCEPTED_CHROMOSOMES)]
+        else:
+            return self.anndata[:, self.anndata.var['interval'].str.startswith(ACCEPTED_CHROMOSOMES)]
 
 
     def get_highly_variable_genes(self, n_genes=5000, layer="log1p_norm", flavor='seurat_v3_paper', inplace=False):
