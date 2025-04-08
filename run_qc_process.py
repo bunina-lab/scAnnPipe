@@ -46,7 +46,7 @@ if __name__ == "__main__":
     parser.add_argument('--mito_percentage_threshold', required=False, default=8, type=int, help="Mito percentage upper limit to filter mitochondria contamination")   
     parser.add_argument('--genes_exp_in_min_cells_threshold', required=False, default=0, type=int, help="Drops genes if not seen in at least ... number of cells")
     parser.add_argument('--cells_with_min_genes_threshold', required=False, default=0, type=int, help="Drops cells if have less than ... number of genes")
-    parser.add_argument('--n_top_expr_genes', required=False, default=50, type=int, help="Plots number of most expressed genes (ribo and mito genes not included)")
+    parser.add_argument('--n_top_expr_genes', required=False, default=1000, type=int, help="Calculates the number of top expressed genes and appends to anndata. Plots 50 genes, not including ribo or mito")
     parser.add_argument('--n_highly_variable_genes', required=False, default=5000, type=int, help="Rnaks n number of highly variable genes")
     parser.add_argument('--dispersion_flavor', required=False, default='seurat_v3_paper', type=str, choices=['seurat_v3_paper', 'seurat_v3', 'seurat', 'cell_ranger'], help="Dispersion flavour defaults 'seurat_v3_paper'")
     parser.add_argument('--gene_ids_of_interest_file', required=False, help="populates additional quality metrics to the genes of interest") 
