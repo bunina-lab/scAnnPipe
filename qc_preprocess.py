@@ -36,7 +36,7 @@ class scRNAPreProcessor:
         filter_doublets = False,
         n_highly_variable_genes=5000,
         high_variable_gene_flavor="seurat_v3_paper",
-        n_top_expr_genes=50,
+        n_top_expr_genes=1000,
 
         ):
         self.anndata = anndata if anndata else self.read_ann_data(anndata_file)
@@ -55,6 +55,7 @@ class scRNAPreProcessor:
 
         self.output_dir = os.path.abspath(output_dir)
         self.output_h5 = output_h5
+        self.normal_layer = None
         self.initial_gene_counts = None
         self.initial_cell_counts = None
         self.mito_gene_percentage = None
@@ -99,6 +100,7 @@ class scRNAPreProcessor:
         else:
             raise ValueError("Normalisation algorithm can either be shifted or pearson")
         
+        self.normal_layer = layer
         self.plot_normalised_counts(layer=layer, title=normal_type)
     
     def plot_normalised_counts(self, layer , title=None, kde=False):
@@ -230,7 +232,9 @@ class scRNAPreProcessor:
         sim_data = sc.pp.scrublet_simulate_doublets(self.anndata,random_seed=self._seed) if simulate else None
         return sc.pp.scrublet(self.anndata, adata_sim=sim_data, random_state=self._seed, copy=bool(not inplace))
     
-    def process_high_expression_genes(self, no_ribo=True, no_mito=True):
+    def process_high_expression_genes(self, no_ribo=True, no_mito=True, layer="log1p_mean_counts", n_top_genes_plot=50):
+        self.anndata.var["is_highly_expressed"] = self.get_higly_expressed_genes(self.anndata, layer=layer, n_top=self.n_top_expr_genes)
+
         fltr_lst = []
         if no_mito:
             fltr_lst.append(self.anndata.var["mt"])
@@ -245,8 +249,13 @@ class scRNAPreProcessor:
             data_2be_plotted = self.anndata
         
         suffix_out = self.output_h5.split(".")[0]
-        sc.pl.highest_expr_genes(data_2be_plotted, gene_symbols='gene_symbols', n_top=self.n_top_expr_genes, log=True, show=False, save=f"_{suffix_out}.png")
+        sc.pl.highest_expr_genes(data_2be_plotted, gene_symbols='gene_symbols', n_top=n_top_genes_plot, log=True, show=False, save=f"_{suffix_out}.png")
         os.rename(f"./figures/highest_expr_genes_{suffix_out}.png", os.path.join(self.output_dir, f"high_expr_genes_{suffix_out}.png"))
+
+    @staticmethod
+    def get_higly_expressed_genes(adata, layer="log1p_norm", n_top=1000):
+        high_exp_genes = adata.var.nlargest(n_top, layer).index
+        return adata.var.index.isin(high_exp_genes)
 
     
     def process_high_variable_genes(self):
