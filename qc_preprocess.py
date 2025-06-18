@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import os
 import json
 from typing import Literal
-from config import _seed, RIBO_GENESET_PATH, ACCEPTED_CHROMOSOMES
+from config import _seed, RIBO_GENESET_PATH, ACCEPTED_CHROMOSOMES, TF_GENESET_PATH
 from scipy.sparse import csr_matrix
 import functools
 import operator
@@ -35,7 +35,7 @@ class scRNAPreProcessor:
         normalise_counts = True,
         filter_doublets = False,
         n_highly_variable_genes=5000,
-        high_variable_gene_flavor="seurat_v3_paper",
+        high_variable_gene_flavor='seurat_v3_paper',
         n_top_expr_genes=1000,
 
         ):
@@ -55,6 +55,7 @@ class scRNAPreProcessor:
 
         self.output_dir = os.path.abspath(output_dir)
         self.output_h5 = output_h5
+        self.qc_varnames = None
         self.normal_layer = None
         self.initial_gene_counts = None
         self.initial_cell_counts = None
@@ -64,32 +65,37 @@ class scRNAPreProcessor:
         self.ribosome_geneset = None
         self.statistics_data = {}
         self._seed = _seed
+        self.tf_geneset = set() ## transcription factors gene list
     
     def process(self):
         self.process_index()
         self.anndata.raw = self.anndata.copy()
         self.preliminary_counts()
+        self.process_gene_ids_names()
         self.qc_process()
         self.plot_counts("initial")
         self.filter_canonical_chromosomes(filter_inplace=True)
-        self.process_outliers()
-        self.preliminary_filtering()
-        self.populate_stats_data()
-        self.process_doublets(filter_doublets=self.drop_doublets)
-        self.plot_counts("filtered")
+        self.process_doublets()
+        self.filter_cells()
         if self.normalise_counts:
             self.process_normalisation()
-        self.process_high_expression_genes()
-        self.process_high_variable_genes()
+        self.process_filter_genes()
+        self.populate_stats_data()
+        self.plot_counts("filtered")
         #self.get_soupX_groups()
         #self.save_data()
         return self.anndata
 
     def process_index(self):
+        self.anndata.var_names_make_unique(join="__")
         self.anndata.var = self.anndata.var.reset_index().rename({'index' : 'gene_symbols'}, axis=1).set_index('gene_ids')
     
     def set_index(self, index_name:str):
-        self.anndata.var = self.anndata.var.reset_index().set_index(index_name).astype(str)
+        self.anndata.var = self.anndata.var.reset_index().set_index(index_name)
+        #Explicitly convert the index to string
+        self.anndata.var.index = self.anndata.var.index.astype(str)
+        # Ensure var_names stays in sync
+        self.anndata.var_names = self.anndata.var.index
     
     def process_normalisation(self, normal_type:Literal["shifted, pearson"]='shifted'):
         if normal_type == "shifted":
@@ -120,10 +126,6 @@ class scRNAPreProcessor:
         self.initial_mito_genes = self.get_mito_genes().copy()
         self.initial_ribo_genes = self.get_ribo_genes().copy()
 
-    def preliminary_filtering(self):
-        sc.pp.filter_genes(self.anndata, min_cells=self.genes_exp_in_min_cells_threshold, inplace=True)
-        sc.pp.filter_cells(self.anndata, min_genes=self.cells_with_min_genes_threshold, inplace=True)
-    
     def check_index(self):
         ## checks if index is unique or not
         return self.anndata.var.index.is_unique
@@ -133,8 +135,37 @@ class scRNAPreProcessor:
     
     def get_ribo_genes(self):
         if self.ribosome_geneset is None:
-            self.ribosome_geneset = self._get_ribosome_geneset()
+            self.ribosome_geneset = self._get_geneset_from_file(RIBO_GENESET_PATH)
         return self.anndata.var['gene_symbols'].isin(self.ribosome_geneset)
+    
+    def get_tf_genes(self):
+        if not self.tf_geneset:
+            self.tf_geneset = self._get_geneset_from_file(TF_GENESET_PATH)
+        
+        return self.anndata.var["gene_ids"].isin(self.tf_geneset)
+
+    def process_gene_ids_names(self):
+        self.anndata.var = self.anndata.var.reset_index()
+
+        self.anndata.var[["gene_ids", "gene_version"]] = self.anndata.var["gene_ids"].str.split('.', expand=True)
+        
+        qc_vars = ['mt', 'ribo', 'tf']
+
+        self.anndata.var['mt'] = self.get_mito_genes().copy()
+        ### RIBOSOME
+        self.anndata.var["ribo"] = self.get_ribo_genes().copy()
+
+        ### Transcription Factors
+        self.anndata.var["tf"] = self.get_tf_genes().copy()
+
+        ### Genes of interest
+        if self.gene_ids_of_interest:
+            self.anndata.var["gene_of_interest"] = self.anndata.var.index.isin(self.gene_ids_of_interest)
+            qc_vars.append("gene_of_interest")
+        
+        self.anndata.var = self.anndata.var.set_index("gene_ids")
+
+        self.qc_varnames = qc_vars
 
     def qc_process(self):
         ## MITO analysis
@@ -142,12 +173,8 @@ class scRNAPreProcessor:
             not_expressed_mito_genes = set(self.get_mito_genes()).difference(self.mito_genes_ids)
             self.mito_gene_percentage = 1 - not_expressed_mito_genes/len(self.mito_genes_ids)
         
-        self.anndata.var['mt'] = self.get_mito_genes().copy()
-        ### RIBOSOME
-        self.anndata.var["ribo"] = self.get_ribo_genes().copy()
-        ##TODO: include gene_ids_of_interest to qc_metrics
-
-        self.calculate_qc_metrics(['mt', 'ribo'])
+        qc_vars = ['mt', 'ribo', 'tf'] if self.qc_varnames is None else self.qc_varnames
+        self.calculate_qc_metrics(qc_vars)
     
     def calculate_qc_metrics(self, varnames:list, percent_top=20):
         sc.pp.calculate_qc_metrics(
@@ -169,31 +196,74 @@ class scRNAPreProcessor:
         self.anndata.obs["mito_counts_outlier"] = (
             self.is_outlier("pct_counts_mt") | self.anndata.obs["pct_counts_mt"] > self.mito_percentage_threshold
             )
-        ##in place filtering
-        self.anndata = self.anndata[(~self.anndata.obs["total_counts_outlier"]) & (~self.anndata.obs["mito_counts_outlier"])]
+    
+    def filter_cells(self):
+        cell_subset, number = sc.pp.filter_cells(self.anndata, min_genes=self.cells_with_min_genes_threshold, inplace=False, copy=True)
+        self.anndata.obs["n_genes"] = number
+        self.anndata.obs["low_quality"] = ~cell_subset
+
+        self.process_outliers()
+
+        self.anndata = self.anndata[~(
+            (self.anndata.obs["total_counts_outlier"]) | \
+            (self.anndata.obs["mito_counts_outlier"]) | \
+            (self.anndata.obs["low_quality"])
+            ), :]
+        
+        if self.drop_doublets:
+            self.anndata = self.anndata[~self.anndata.obs['predicted_doublet'], :]
+
+    def process_filter_genes(self):
+        ##calc quality
+        gene_subset, number = sc.pp.filter_genes(self.anndata, min_cells=self.genes_exp_in_min_cells_threshold, inplace=False, copy=True)
+        self.anndata.var["low_quality"] = ~gene_subset
+        self.anndata.var["n_cells"] = number
+
+        ##filter out ribosomes/mt genes
+        self.filter_mito_ribo_genes()
+
+        ##Get Highest exp/variable genes
+        self.process_high_expression_genes()
+        self.process_high_variable_genes()
+
+        keep = ["highly_variable", "is_highly_expressed", "gene_of_interest", "tf"]
+        fltr = ["low_quality"]
+
+        self.anndata = self.anndata[:, ((
+            (self.anndata.var["highly_variable"]) | \
+            (self.anndata.var["is_highly_expressed"]) | \
+            (self.anndata.var["tf"])) & \
+            ~(self.anndata.var["low_quality"])
+            )]
+
+    def filter_mito_ribo_genes(self):
+        self.anndata = self.anndata[:, ~(
+            (self.anndata.var["mt"]) | \
+            (self.anndata.var["ribo"])
+        )]
 
 
     def populate_stats_data(self):
         self.statistics_data.update({
             "initial_gene_counts" : self.initial_gene_counts,
             "initial_cell_counts" : self.initial_cell_counts,
-            "initial_mito_gene_counts" : len(self.anndata.var[self.initial_mito_genes]),
+            #"initial_mito_gene_counts" : len(self.anndata.var[self.initial_mito_genes]),
             "initial_mito_genes_perc" : self.mito_gene_percentage,
-            "initial_genes_perc" : self.initial_cell_counts/self.geneset_ids if self.geneset_ids else None,
-            "initial_ribo_gene_counts" : len(self.anndata.var[self.initial_ribo_genes]),
+            #"initial_genes_perc" : self.initial_cell_counts/self.geneset_ids if self.geneset_ids else None,
+            #"initial_ribo_gene_counts" : len(self.anndata.var[self.initial_ribo_genes]),
             "post_gene_counts" : self.anndata.n_vars,
             "post_cell_counts": self.anndata.n_obs,
-            "post_mito_gene_counts": len(self.anndata.var[self.anndata.var['mt']]),
+            #"post_mito_gene_counts": len(self.anndata.var[self.anndata.var['mt']]),
             "post_mito_genes_perc": 1 - set(self.anndata.var['mt']).difference(self.mito_genes_ids)/len(self.anndata.var['mt']) if self.mito_genes_ids else None,
-            "post_genes_perc": self.anndata.n_vars/self.geneset_ids if self.geneset_ids else None,
-            "post_ribo_gene_counts": len(self.anndata.var[self.anndata.var['ribo']]),
+            #"post_genes_perc": self.anndata.n_vars/self.geneset_ids if self.geneset_ids else None,
+            #"post_ribo_gene_counts": len(self.anndata.var[self.anndata.var['ribo']]),
         })
     
     
     def plot_counts(self, save_name):
         sc.pl.violin(
             self.anndata, 
-            ['n_genes_by_counts', 'total_counts', 'pct_counts_mt', 'pct_counts_ribo'],
+            ['n_genes_by_counts', 'total_counts', 'pct_counts_mt', 'pct_counts_ribo', 'pct_counts_tf'],
             show=False,
             save=f"_{save_name}.png",
             jitter=0.4, 
@@ -220,14 +290,19 @@ class scRNAPreProcessor:
         self.anndata.layers[layer] = csr_matrix(analytic_pearson["X"])
         return self.anndata
     
-    def process_doublets(self, filter_doublets=True):
+    def process_doublets(self):
+        # Clean data before doublet detection
+        # Remove genes with zero variance
+        sc.pp.filter_genes(self.anndata, min_cells=1)
+        
+        # Now run doublet detection
+        print("Estimate doublets")
         self.estimate_doublets(simulate=True, inplace=True)
         doublets_fltr = self.anndata.obs['predicted_doublet']
         self.statistics_data.update({
             'n_predicted_doublets': len(self.anndata.obs[doublets_fltr])
         })
-        if filter_doublets:
-            self.anndata = self.anndata[~doublets_fltr, :]
+        
 
     def estimate_doublets(self, simulate=True, inplace=False):
         sim_data = sc.pp.scrublet_simulate_doublets(self.anndata,random_seed=self._seed) if simulate else None
@@ -294,9 +369,9 @@ class scRNAPreProcessor:
         return sc.read_10x_h5(filename=file_path)
     
     @staticmethod
-    def _get_ribosome_geneset():
-        with open(RIBO_GENESET_PATH) as fh:
-            return {ribo_gene.strip() for ribo_gene in fh if not ribo_gene.startswith(("#", " "))}
+    def _get_geneset_from_file(file_path:str):
+        with open(file_path) as fh:
+            return {gene_id.strip().replace("\n", "") for gene_id in fh if not gene_id.startswith(("#", " "))}
         
 
 

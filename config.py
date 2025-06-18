@@ -19,3 +19,5 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 
 RIBO_GENESET_PATH = os.path.join(DATA_DIR, "KEGG_RIBOSOME_GENESET.txt")
 
+TF_GENESET_PATH = os.path.join(DATA_DIR, "TF_gene_ids.txt")
+
