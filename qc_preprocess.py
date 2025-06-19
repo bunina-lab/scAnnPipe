@@ -31,7 +31,7 @@ class scRNAPreProcessor:
         mito_percentage_threshold=25, 
         genes_exp_in_min_cells_threshold=10, 
         cells_with_min_genes_threshold=100,
-        gene_ids_of_interest=None,
+        gene_ids_of_interest:set=None,
         normalise_counts = True,
         filter_doublets = False,
         n_highly_variable_genes=5000,
@@ -160,7 +160,7 @@ class scRNAPreProcessor:
 
         ### Genes of interest
         if self.gene_ids_of_interest:
-            self.anndata.var["gene_of_interest"] = self.anndata.var.index.isin(self.gene_ids_of_interest)
+            self.anndata.var["gene_of_interest"] = self.anndata.var["gene_ids"].isin(self.gene_ids_of_interest)
             qc_vars.append("gene_of_interest")
         
         self.anndata.var = self.anndata.var.set_index("gene_ids")
@@ -216,8 +216,11 @@ class scRNAPreProcessor:
     def process_filter_genes(self):
         ##calc quality
         gene_subset, number = sc.pp.filter_genes(self.anndata, min_cells=self.genes_exp_in_min_cells_threshold, inplace=False, copy=True)
-        self.anndata.var["low_quality"] = ~gene_subset
+        #self.anndata.var["low_quality"] = ~gene_subset
         self.anndata.var["n_cells"] = number
+        ### Filter low quality genes
+        self.anndata = self.anndata[:, gene_subset]
+        
 
         ##filter out ribosomes/mt genes
         self.filter_mito_ribo_genes()
@@ -226,15 +229,21 @@ class scRNAPreProcessor:
         self.process_high_expression_genes()
         self.process_high_variable_genes()
 
-        keep = ["highly_variable", "is_highly_expressed", "gene_of_interest", "tf"]
-        fltr = ["low_quality"]
+        ###keep = ["highly_variable", "is_highly_expressed", "gene_of_interest", "tf"]
 
-        self.anndata = self.anndata[:, ((
-            (self.anndata.var["highly_variable"]) | \
-            (self.anndata.var["is_highly_expressed"]) | \
-            (self.anndata.var["tf"])) & \
-            ~(self.anndata.var["low_quality"])
-            )]
+        # Build the keep condition
+        keep_condition = (
+            (self.anndata.var["highly_variable"]) | 
+            (self.anndata.var["is_highly_expressed"]) | 
+            (self.anndata.var["tf"])
+        )
+
+        # Add gene_of_interest if the column exists
+        if 'gene_of_interest' in self.anndata.var.columns:
+            keep_condition = keep_condition | (self.anndata.var['gene_of_interest'])
+
+
+        self.anndata = self.anndata[:, (keep_condition)]
 
     def filter_mito_ribo_genes(self):
         self.anndata = self.anndata[:, ~(
@@ -296,7 +305,7 @@ class scRNAPreProcessor:
         sc.pp.filter_genes(self.anndata, min_cells=1)
         
         # Now run doublet detection
-        print("Estimate doublets")
+        ##print("Estimate doublets")
         self.estimate_doublets(simulate=True, inplace=True)
         doublets_fltr = self.anndata.obs['predicted_doublet']
         self.statistics_data.update({
