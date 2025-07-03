@@ -366,6 +366,12 @@ class scRNAPreProcessor:
     def save_data(self, reset_index=True):
         with open(os.path.join(self.output_dir, "stats.json"), "w") as fh:
             json.dump(self.statistics_data, fh, indent=4)
+        
+        with open(os.path.join(self.output_dir, "cell_barcodes.txt"), "w") as fh:
+            fh.write("\n".join(self.anndata.obs.index) + "\n")
+        
+        with open(os.path.join(self.output_dir, "gene_ids.txt"), "w") as fh:
+            fh.write("\n".join(self.anndata.var["gene_symbols"].to_list()) + "\n")
 
         ### Reset the index
         if reset_index:
